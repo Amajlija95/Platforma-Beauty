@@ -6,7 +6,6 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { HealthStatusDatabasePool } from './healthStatusDatabasePool';
-import type { HealthStatusStartupReadinessOverride } from './healthStatusStartupReadinessOverride';
 import type { SchedulerJobHealth } from './schedulerJobHealth';
 
 export interface HealthStatus {
@@ -14,6 +13,4 @@ export interface HealthStatus {
   databasePool: HealthStatusDatabasePool;
   /** Last known local status of each periodic database-backed scheduler job. */
   schedulerJobs: SchedulerJobHealth[];
-  /** Present only in a deployment where LUMERA_STARTUP_READINESS_OVERRIDE is set. "active" means readiness failed and the owner override admitted this boot with background work disabled; "unused" means readiness passed and the variable should be removed. */
-  startupReadinessOverride?: HealthStatusStartupReadinessOverride;
 }

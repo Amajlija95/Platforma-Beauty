@@ -10534,15 +10534,6 @@ components:
           type: array
           description: Last known local status of each periodic database-backed scheduler job.
           items: { $ref: "#/components/schemas/SchedulerJobHealth" }
-        startupReadinessOverride:
-          type: object
-          description: Present only in a deployment where LUMERA_STARTUP_READINESS_OVERRIDE is set. "active" means readiness failed and the owner override admitted this boot with background work disabled; "unused" means readiness passed and the variable should be removed.
-          properties:
-            state: { type: string, enum: [active, unused] }
-            reason: { type: ["string", "null"] }
-            expiresAt: { type: ["string", "null"], format: date-time }
-            backgroundWork: { type: string, enum: [disabled, enabled] }
-          required: [state, reason, expiresAt, backgroundWork]
       required: [status, databasePool, schedulerJobs]
     SchedulerJobHealth:
       type: object

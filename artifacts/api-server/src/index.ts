@@ -421,8 +421,9 @@ let stopBackgroundWork: (() => void) | undefined;
 let readinessOverrideWarningInterval: NodeJS.Timeout | undefined;
 let readinessOverrideExpiryTimer: NodeJS.Timeout | undefined;
 
-if (startupAdmission.mode === "readiness-override") {
-  const { reason, expiresAt } = startupAdmission;
+// The only timers a readiness-override boot starts besides the two LISTEN
+// listeners' reconnects; the override proof identifies them by this name.
+function superviseReadinessOverride(reason: string, expiresAt: Date): void {
   readinessOverrideWarningInterval = setInterval(() => {
     logger.error(
       { event: "STARTUP_READINESS_OVERRIDE_ACTIVE", reason, expiresAt: expiresAt.toISOString(), backgroundWork: "disabled" },
@@ -439,6 +440,10 @@ if (startupAdmission.mode === "readiness-override") {
     );
     shutDown("SIGTERM", 1);
   }, Math.max(0, expiresAt.getTime() - Date.now()));
+}
+
+if (startupAdmission.mode === "readiness-override") {
+  superviseReadinessOverride(startupAdmission.reason, startupAdmission.expiresAt);
 } else {
   stopBackgroundWork = startBackgroundWork();
   const unusedOverride = startupAdmission.unusedOverride;

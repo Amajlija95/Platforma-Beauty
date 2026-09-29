@@ -6,28 +6,10 @@ export function setStartupAdmission(value: StartupAdmission): void {
   admission = value;
 }
 
-export interface StartupReadinessOverrideHealth {
-  state: "active" | "unused";
-  reason: string | null;
-  expiresAt: string | null;
-  backgroundWork: "disabled" | "enabled";
-}
-
-/** Health view of the readiness override; undefined when none is set. */
-export function startupReadinessOverrideHealth(): StartupReadinessOverrideHealth | undefined {
-  if (admission.mode === "readiness-override") {
-    return {
-      state: "active",
-      reason: admission.reason,
-      expiresAt: admission.expiresAt.toISOString(),
-      backgroundWork: "disabled",
-    };
-  }
-  if (!admission.unusedOverride) return undefined;
-  return {
-    state: "unused",
-    reason: admission.unusedOverride.reason,
-    expiresAt: admission.unusedOverride.expiresAt?.toISOString() ?? null,
-    backgroundWork: "enabled",
-  };
+/**
+ * Whether this boot runs on the readiness override. Public health exposes only
+ * this; the reason, expiry and database identity details stay in the log.
+ */
+export function isStartupReadinessOverrideActive(): boolean {
+  return admission.mode === "readiness-override";
 }

@@ -18,18 +18,21 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
+import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import test from "node:test";
 import pg from "pg";
 import { assertDestructiveTestRuntimeAllowed } from "@workspace/db/destructive-test-runtime";
+import { admitDatabaseMigrationStartup } from "@workspace/db/migration-runtime";
 import {
   explicitAdminUrlFromArgs,
+  validateDisposableAdminUrl,
   withOwnedDisposableDatabase,
 } from "../startup-equivalence/fixtures";
 import { applyMigrations } from "./runner";
-import { expectedDisposableTarget } from "./disposable-target-fixture";
+import { expectedDisposableTarget, registerDisposableTarget } from "./disposable-target-fixture";
 import {
   assertNoDdlInBootWindow,
   assertPostgresLogSettings,
@@ -42,6 +45,7 @@ const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.resolve(thisDir, "../../..");
 const apiEntrypoint = path.resolve(workspaceRoot, "artifacts/api-server/src/index.ts");
 const tsxBin = path.resolve(workspaceRoot, "scripts/node_modules/.bin/tsx");
+const backgroundWorkProbe = path.resolve(thisDir, "background-work-probe.mjs");
 const sqlLogArgument = process.argv.find((argument) => argument.startsWith("--sql-log="));
 assert.ok(sqlLogArgument, "An explicit --sql-log path is required for the readiness override proof.");
 const sqlLogPath = path.resolve(workspaceRoot, sqlLogArgument.slice("--sql-log=".length));
@@ -50,6 +54,8 @@ const evidenceDir = evidenceArgument ? path.resolve(workspaceRoot, evidenceArgum
 const adminUrl = explicitAdminUrlFromArgs();
 const OVERRIDE = "LUMERA_STARTUP_READINESS_OVERRIDE";
 const DRIFT = "MIGRATION_READINESS_CATALOG_DRIFT";
+const notOverridable = (reason: string) =>
+  `${reason} (STARTUP_READINESS_OVERRIDE_REJECTED:not-overridable; only ${DRIFT} can be overridden)`;
 const observations: Array<Record<string, unknown>> = [];
 
 function requireAdminUrl(): string {
@@ -78,7 +84,7 @@ interface ApiProcess {
   exited(): Promise<number | null>;
 }
 
-function startApi(databaseUrl: string, override: string | undefined): Promise<ApiProcess> {
+function startApi(databaseUrl: string, override: string | undefined, probeLog?: string): Promise<ApiProcess> {
   return availablePort().then((port) => {
     const chunks: string[] = [];
     const child = spawn(tsxBin, [apiEntrypoint], {
@@ -96,6 +102,10 @@ function startApi(databaseUrl: string, override: string | undefined): Promise<Ap
         AI_INTEGRATIONS_ANTHROPIC_API_KEY: "disposable-not-used",
         DOTENV_CONFIG_PATH: path.join(workspaceRoot, ".local", `no-dotenv-${randomUUID()}`),
         ...(override === undefined ? {} : { [OVERRIDE]: override }),
+        ...(probeLog === undefined ? {} : {
+          NODE_OPTIONS: `--import=${pathToFileURL(backgroundWorkProbe).href}`,
+          LUMERA_BACKGROUND_PROBE_LOG: probeLog,
+        }),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -148,6 +158,121 @@ async function expectRefusal(databaseUrl: string, override: string | undefined):
     return { exitCode: api.child.exitCode, output: api.output() };
   } finally {
     await stop(api);
+  }
+}
+
+interface ProbeRecord {
+  readonly kind: "timer" | "query";
+  readonly type?: string;
+  readonly text?: string;
+  readonly stack: readonly string[];
+}
+
+// Functions whose timers and queries a readiness-override boot may create: the
+// read-only readiness check, the two LISTEN listeners with their reconnects,
+// and the override's own supervision and shutdown. Anything else on the stack
+// is background work.
+const allowedProbeFrames: ReadonlyArray<{ file: RegExp; functions?: readonly string[] }> = [
+  { file: /\/lib\/db\/src\/migration-runtime\/[^/]+\.ts:/u },
+  // Per-connection statement_timeout setup, run for whichever caller opened
+  // the connection; that caller's own queries are still classified.
+  { file: /\/lib\/db\/src\/pool-runtime\.ts:/u, functions: ["Object.onConnect"] },
+  // This proof's own /api/healthz requests (response socket timers only).
+  { file: /\/artifacts\/api-server\/src\/routes\/health\.ts:/u },
+  {
+    file: /\/artifacts\/api-server\/src\/lib\/salon-notification-events\.ts:/u,
+    functions: ["startSalonNotificationEventListener", "stopSalonNotificationEventListener", "connectSharedListener",
+      "connectListenerClient", "scheduleListenerReconnect", "destroyListenerConnection"],
+  },
+  {
+    file: /\/artifacts\/api-server\/src\/lib\/catalog-cache\.ts:/u,
+    functions: ["startCatalogCacheInvalidationListener", "stopCatalogCacheInvalidationListener", "CatalogCache.start",
+      "CatalogCache.stop", "CatalogCache.connectListener", "CatalogCache.scheduleReconnect",
+      "CatalogCache.handleListenerError", "CatalogCache.handleListenerEnd"],
+  },
+  {
+    file: /\/artifacts\/api-server\/src\/index\.ts:/u,
+    functions: ["superviseReadinessOverride", "shutDown", "clearScheduledTasks", "performCleanup", "flushAndExit"],
+  },
+];
+
+function frameFunction(frame: string): string {
+  return frame.replace(/^at (?:async )?/u, "").replace(/ \(.*$/u, "").replace(/ \[as [^\]]+\]$/u, "");
+}
+
+function isApplicationFrame(frame: string): boolean {
+  return (frame.includes(`${workspaceRoot}/artifacts/`) || frame.includes(`${workspaceRoot}/lib/`))
+    && !frame.includes("/node_modules/");
+}
+
+function isAllowedFrame(frame: string): boolean {
+  return allowedProbeFrames.some(({ file, functions }) =>
+    file.test(frame) && (!functions || functions.includes(frameFunction(frame))));
+}
+
+/**
+ * Every probe record that is background work: a query whose stack has no
+ * allowed function, or a timer whose stack has application frames but no
+ * allowed function. Timers created purely inside libraries (pg-pool idle
+ * timers, HTTP keep-alive) have no application frame and are not work.
+ */
+async function backgroundWorkViolations(probeLog: string): Promise<ProbeRecord[]> {
+  const records = (await fs.readFile(probeLog, "utf8")).split("\n").filter(Boolean)
+    .map((line) => JSON.parse(line) as ProbeRecord);
+  assert.ok(records.some((record) => record.kind === "query"), "The probe recorded no SQL; it is not attached.");
+  return records.filter((record) => {
+    if (record.stack.some(isAllowedFrame)) return false;
+    return record.kind === "query" || record.stack.some(isApplicationFrame);
+  });
+}
+
+function describeViolations(violations: readonly ProbeRecord[]): string {
+  return violations.slice(0, 10).map((violation) => `${violation.kind}${violation.text ? ` ${violation.text}` : ""}\n  ${
+    violation.stack.filter(isApplicationFrame).slice(0, 6).join("\n  ")}`).join("\n");
+}
+
+async function probeLogPath(): Promise<string> {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "lumera-override-probe-"));
+  return path.join(directory, "background-work.jsonl");
+}
+
+/**
+ * A migrated database renamed after migration: its ledger stays bound to the
+ * old name, exactly like a database that is not the one the ledger was
+ * written for.
+ */
+async function withRenamedMigratedDatabase<T>(callback: (connectionString: string) => Promise<T>): Promise<T> {
+  const target = validateDisposableAdminUrl(requireAdminUrl());
+  const admin = new pg.Pool({ connectionString: target.toString(), password: "", max: 1, connectionTimeoutMillis: 5_000 });
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 16);
+  const boundName = `lumera_override_bound_${suffix}`;
+  const movedName = `lumera_override_moved_${suffix}`;
+  const url = (name: string) => {
+    const child = new URL(target.toString());
+    child.pathname = `/${name}`;
+    return child.toString();
+  };
+  let existing: string | undefined;
+  try {
+    const owner = (await admin.query<{ current_user: string }>("SELECT current_user")).rows[0]!.current_user;
+    await admin.query(`CREATE DATABASE "${boundName}" OWNER "${owner}"`);
+    existing = boundName;
+    const bound = new pg.Pool({ connectionString: url(boundName), password: "", max: 2 });
+    try {
+      await registerDisposableTarget(admin, bound, boundName);
+      await migrate(bound);
+    } finally {
+      await bound.end();
+    }
+    await admin.query(`ALTER DATABASE "${boundName}" RENAME TO "${movedName}"`);
+    existing = movedName;
+    return await callback(url(movedName));
+  } finally {
+    try {
+      if (existing) await admin.query(`DROP DATABASE "${existing}"`);
+    } finally {
+      await admin.end();
+    }
   }
 }
 
@@ -285,8 +410,9 @@ test("a failed readiness check is overridable only by the exact reason with a va
       const expiresAt = utcSeconds(2 * 60 * 60_000);
       const ledgerBefore = await ledgerSnapshot(pool);
       const writesBefore = await userTableWrites(pool);
+      const probeLog = await probeLogPath();
       const { health, output } = await withNoDdlWindow(pool, name, async () => {
-        const api = await startApi(connectionString, `${DRIFT}@${expiresAt}`);
+        const api = await startApi(connectionString, `${DRIFT}@${expiresAt}`, probeLog);
         try {
           const health = await waitForHealth(api);
           // Longer than the old startup sweep needs to touch the database.
@@ -296,18 +422,23 @@ test("a failed readiness check is overridable only by the exact reason with a va
           await stop(api);
         }
       });
+      // Public health says only that the override is active; details stay in the log.
       assert.equal(health.status, "readiness-override");
-      assert.deepEqual(health.startupReadinessOverride, {
-        state: "active", reason: DRIFT, expiresAt: new Date(expiresAt).toISOString(), backgroundWork: "disabled",
-      });
+      assert.equal("startupReadinessOverride" in health, false);
+      const publicBody = JSON.stringify(health);
+      assert.doesNotMatch(publicBody, /MIGRATION_READINESS_|STARTUP_READINESS_OVERRIDE/u);
+      assert.equal(publicBody.includes(expiresAt.slice(0, 16)), false, publicBody);
       assert.deepEqual(health.schedulerJobs, []);
       const active = logLines(output, "STARTUP_READINESS_OVERRIDE_ACTIVE");
       assert.equal(active.length, 1, output);
       assert.equal(active[0]!.reason, DRIFT);
+      assert.equal(active[0]!.expiresAt, new Date(expiresAt).toISOString());
+      const violations = await backgroundWorkViolations(probeLog);
+      assert.deepEqual(violations.length, 0, `Background work started under the override:\n${describeViolations(violations)}`);
       assert.doesNotMatch(output, /Initial scheduler sweep|Legacy media migration/u);
       assert.equal(await ledgerSnapshot(pool), ledgerBefore, "The override boot changed the migration ledger.");
       assert.equal(await userTableWrites(pool), writesBefore, "The override boot wrote application tables.");
-      observations.push({ case: "granted", health, log: active[0] });
+      observations.push({ case: "granted", health, log: active[0], backgroundWorkViolations: violations.length });
     });
 
     await t.test("the running override stops the process at expiry", async () => {
@@ -333,8 +464,9 @@ test("passing readiness with the override still set runs normally and warns to r
     await migrate(pool);
     const expiresAt = utcSeconds(60 * 60_000);
     const ledgerBefore = await ledgerSnapshot(pool);
+    const probeLog = await probeLogPath();
     const { health, output } = await withNoDdlWindow(pool, name, async () => {
-      const api = await startApi(connectionString, `${DRIFT}@${expiresAt}`);
+      const api = await startApi(connectionString, `${DRIFT}@${expiresAt}`, probeLog);
       try {
         await waitForHealth(api);
         await sleep(3_000);
@@ -344,14 +476,97 @@ test("passing readiness with the override still set runs normally and warns to r
       }
     });
     assert.equal(health.status, "ok");
-    assert.deepEqual(health.startupReadinessOverride, {
-      state: "unused", reason: DRIFT, expiresAt: new Date(expiresAt).toISOString(), backgroundWork: "enabled",
-    });
+    assert.equal("startupReadinessOverride" in health, false);
     assert.ok(Array.isArray(health.schedulerJobs) && health.schedulerJobs.length > 0, "Background jobs were not registered.");
     const unused = logLines(output, "STARTUP_READINESS_OVERRIDE_UNUSED");
     assert.equal(unused.length, 1, output);
+    assert.equal(unused[0]!.reason, DRIFT);
+    // Positive control: the same probe and classifier must see the normal
+    // boot's background work, or an empty override result would prove nothing.
+    const violations = await backgroundWorkViolations(probeLog);
+    const fromBackgroundWork = violations.filter((violation) =>
+      violation.stack.some((frame) => frameFunction(frame) === "startBackgroundWork"));
+    assert.ok(fromBackgroundWork.some((violation) => violation.kind === "timer"), "Probe missed the normal boot's job timers.");
+    assert.ok(violations.some((violation) => violation.kind === "query"), "Probe missed the normal boot's job queries.");
     assert.equal(logLines(output, "STARTUP_READINESS_OVERRIDE_ACTIVE").length, 0);
     assert.equal(await ledgerSnapshot(pool), ledgerBefore);
-    observations.push({ case: "unused", healthStatus: health.status, startupReadinessOverride: health.startupReadinessOverride, log: unused[0] });
+    observations.push({
+      case: "unused",
+      healthStatus: health.status,
+      log: unused[0],
+      positiveControl: {
+        violations: violations.length,
+        startBackgroundWorkTimers: fromBackgroundWork.filter((violation) => violation.kind === "timer").length,
+        queries: violations.filter((violation) => violation.kind === "query").length,
+      },
+    });
+  });
+});
+
+test("every reason other than catalog drift is refused even with an override naming it", async (t) => {
+  const refuse = async (label: string, connectionString: string, reason: string) => {
+    const refused = await expectRefusal(connectionString, `${reason}@${utcSeconds(60 * 60_000)}`);
+    const line = readinessErrorLine(refused.output);
+    assert.ok(line.includes(notOverridable(reason)), line);
+    observations.push({ case: label, exitCode: refused.exitCode, message: line });
+  };
+
+  await t.test("empty database: LEDGER_MISSING refused", async () => {
+    await withOwnedDisposableDatabase(requireAdminUrl(), async ({ connectionString }) => {
+      await refuse("ledger-missing", connectionString, "MIGRATION_READINESS_LEDGER_MISSING");
+    });
+  });
+
+  await t.test("schema outside public: NON_PUBLIC_NAMESPACE refused", async () => {
+    await withOwnedDisposableDatabase(requireAdminUrl(), async ({ pool, connectionString }) => {
+      await migrate(pool);
+      await pool.query("CREATE SCHEMA lumera_override_extra_schema");
+      await refuse("non-public-namespace", connectionString, "MIGRATION_READINESS_NON_PUBLIC_NAMESPACE");
+    });
+  });
+
+  await t.test("ledger bound to another database: LEDGER_IDENTITY_MISMATCH refused", async () => {
+    await withRenamedMigratedDatabase(async (connectionString) => {
+      await refuse("ledger-identity-mismatch", connectionString,
+        "MIGRATION_READINESS_LEDGER_IDENTITY_MISMATCH:000001:databaseName");
+    });
+  });
+
+  await t.test("connection terminated after connect, before the first query: READ_FAILED refused", async () => {
+    await withOwnedDisposableDatabase(requireAdminUrl(), async ({ pool, connectionString }) => {
+      await migrate(pool);
+      const reading = new pg.Pool({ connectionString, password: "", max: 1 });
+      // The entrypoint cannot be stopped at this instant, so the same admission
+      // it runs is driven directly with a connection the server has terminated.
+      const terminating = {
+        async connect() {
+          const client = await reading.connect();
+          client.on("error", () => undefined);
+          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+          const terminated = await pool.query<{ ok: boolean }>("SELECT pg_terminate_backend($1) AS ok", [pid]);
+          assert.equal(terminated.rows[0]?.ok, true);
+          await sleep(200);
+          return { query: client.query.bind(client), release: () => client.release(true) };
+        },
+      };
+      try {
+        const reason = "MIGRATION_READINESS_READ_FAILED";
+        for (const named of [reason, DRIFT]) {
+          await assert.rejects(
+            admitDatabaseMigrationStartup(terminating as never, {
+              NODE_ENV: "production",
+              [OVERRIDE]: `${named}@${utcSeconds(60 * 60_000)}`,
+            }),
+            (error: unknown) => {
+              assert.equal((error as Error).message, notOverridable(reason));
+              observations.push({ case: `read-failed-named-${named}`, message: (error as Error).message });
+              return true;
+            },
+          );
+        }
+      } finally {
+        await reading.end();
+      }
+    });
   });
 });
