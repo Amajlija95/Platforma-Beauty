@@ -102,8 +102,8 @@ async function readActualEntrypoint(): Promise<{ path: string; sourceHash: strin
   for (const name of ensureNames) {
     assert.doesNotMatch(source, new RegExp(`\\b${name}\\b`), `Actual index still contains ${name}`);
   }
-  assert.match(source, /import \{ assertDatabaseMigrationReady \} from "@workspace\/db\/migration-runtime";/u);
-  assert.match(source, /await assertDatabaseMigrationReady\(pool\);/u);
+  assert.match(source, /import \{\n  admitDatabaseMigrationStartup,\n  STARTUP_READINESS_OVERRIDE_VARIABLE,\n\} from "@workspace\/db\/migration-runtime";/u);
+  assert.match(source, /const startupAdmission = await admitDatabaseMigrationStartup\(pool\);/u);
   assert.match(source, /await reconcileKnownTestListings\(\);/u);
   return {
     path: apiEntrypoint,

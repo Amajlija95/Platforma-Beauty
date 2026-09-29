@@ -18,6 +18,7 @@ export {
 export {
   assertDatabaseMigrationReady,
   inspectDatabaseMigrationReady,
+  isDeploymentRuntime,
   DatabaseMigrationReadinessError,
   isReviewedPostgresPatch,
   migrationReadinessContract,
@@ -45,3 +46,12 @@ export {
   type LedgerIdentityColumns,
   type LedgerIdentityState,
 } from "./ledger-identity";
+export {
+  admitDatabaseMigrationStartup,
+  evaluateStartupReadinessOverride,
+  STARTUP_READINESS_OVERRIDE_MAX_MS,
+  STARTUP_READINESS_OVERRIDE_VARIABLE,
+  type StartupAdmission,
+  type StartupReadinessOverrideEvaluation,
+  type StartupReadinessOverrideOutcome,
+} from "./startup-admission";

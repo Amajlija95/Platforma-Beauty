@@ -87,8 +87,19 @@ function callName(expression: ts.Expression): string | undefined {
 }
 
 function callFromStatement(statement: ts.Statement): ts.CallExpression | undefined {
-  if (!ts.isExpressionStatement(statement)) return undefined;
-  let expression = statement.expression;
+  let expression: ts.Expression;
+  if (ts.isExpressionStatement(statement)) {
+    expression = statement.expression;
+  } else if (
+    ts.isVariableStatement(statement)
+    && statement.declarationList.declarations.length === 1
+    && statement.declarationList.declarations[0]!.initializer
+  ) {
+    // `const admission = await guard(pool);` binds the guard's result.
+    expression = statement.declarationList.declarations[0]!.initializer;
+  } else {
+    return undefined;
+  }
   if (ts.isAwaitExpression(expression)) expression = expression.expression;
   if (!ts.isCallExpression(expression)) return undefined;
   return expression;
@@ -218,7 +229,7 @@ export function checkStartupDdlRemovalGate(
   const rootFile = options.rootFile ?? "artifacts/api-server/src/index.ts";
   const rootSource = sourceFor(rootFile, repositoryRoot, options.moduleSources);
   const sourceFile = parse(rootSource, rootFile);
-  const readinessNames = options.readinessGuardNames ?? ["assertDatabaseMigrationReady"];
+  const readinessNames = options.readinessGuardNames ?? ["assertDatabaseMigrationReady", "admitDatabaseMigrationStartup"];
   const readinessModules = options.readinessGuardModules ?? ["@workspace/db/migration-runtime"];
   const importedNames = importedStartupNames(sourceFile);
   const importedReadiness = importedReadinessNames(sourceFile, readinessNames, readinessModules);

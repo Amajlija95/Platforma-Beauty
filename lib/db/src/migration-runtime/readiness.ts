@@ -218,7 +218,7 @@ export async function assertDatabaseMigrationReady(
   }
 }
 
-function isDeploymentRuntime(environment: NodeJS.ProcessEnv): boolean {
+export function isDeploymentRuntime(environment: NodeJS.ProcessEnv): boolean {
   return environment.NODE_ENV === "production"
     || /^(?:1|true)$/iu.test(environment.REPLIT_DEPLOYMENT ?? "")
     || /^(?:1|true)$/iu.test(environment.REPL_DEPLOYMENT ?? "")

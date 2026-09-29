@@ -810,6 +810,34 @@ export type HealthStatusDatabasePool = {
   max: number;
 };
 
+export type HealthStatusStartupReadinessOverrideState = typeof HealthStatusStartupReadinessOverrideState[keyof typeof HealthStatusStartupReadinessOverrideState];
+
+
+export const HealthStatusStartupReadinessOverrideState = {
+  active: 'active',
+  unused: 'unused',
+} as const;
+
+export type HealthStatusStartupReadinessOverrideBackgroundWork = typeof HealthStatusStartupReadinessOverrideBackgroundWork[keyof typeof HealthStatusStartupReadinessOverrideBackgroundWork];
+
+
+export const HealthStatusStartupReadinessOverrideBackgroundWork = {
+  disabled: 'disabled',
+  enabled: 'enabled',
+} as const;
+
+/**
+ * Present only in a deployment where LUMERA_STARTUP_READINESS_OVERRIDE is set. "active" means readiness failed and the owner override admitted this boot with background work disabled; "unused" means readiness passed and the variable should be removed.
+ */
+export type HealthStatusStartupReadinessOverride = {
+  state: HealthStatusStartupReadinessOverrideState;
+  /** @nullable */
+  reason: string | null;
+  /** @nullable */
+  expiresAt: string | null;
+  backgroundWork: HealthStatusStartupReadinessOverrideBackgroundWork;
+};
+
 export type SchedulerJobHealthState = typeof SchedulerJobHealthState[keyof typeof SchedulerJobHealthState];
 
 
@@ -855,6 +883,8 @@ export interface HealthStatus {
   databasePool: HealthStatusDatabasePool;
   /** Last known local status of each periodic database-backed scheduler job. */
   schedulerJobs: SchedulerJobHealth[];
+  /** Present only in a deployment where LUMERA_STARTUP_READINESS_OVERRIDE is set. "active" means readiness failed and the owner override admitted this boot with background work disabled; "unused" means readiness passed and the variable should be removed. */
+  startupReadinessOverride?: HealthStatusStartupReadinessOverride;
 }
 
 export type UserRole = typeof UserRole[keyof typeof UserRole];

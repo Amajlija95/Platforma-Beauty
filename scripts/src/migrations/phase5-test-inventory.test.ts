@@ -71,7 +71,7 @@ test("required evidence skip policy rejects every supported Node test skip form"
 });
 
 test("Phase 5 inventory covers the complete seven-commit range and latest boot fixes", async () => {
-  assert.equal(phase5TestInventory.length, 27);
+  assert.equal(phase5TestInventory.length, 29);
   assert.equal(
     phase5TestInventory.filter((entry) => entry.provenance === "343ea5ae").length,
     11,
@@ -115,6 +115,7 @@ test("database-free and disposable commands have no orphaned Phase 5 entrypoints
       "legacy-boot-refusal",
       "historical-data-regressions",
       "interrupted-recovery",
+      "startup-readiness-override",
     ],
   );
 });

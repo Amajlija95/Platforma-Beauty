@@ -48,7 +48,13 @@ export const HealthCheckResponse = zod.object({
   "consecutiveFailures": zod.number().min(healthCheckResponseSchedulerJobsItemConsecutiveFailuresMin).multipleOf(healthCheckResponseSchedulerJobsItemConsecutiveFailuresMultipleOf),
   "deferredCycles": zod.number().min(healthCheckResponseSchedulerJobsItemDeferredCyclesMin).multipleOf(healthCheckResponseSchedulerJobsItemDeferredCyclesMultipleOf),
   "nextRetryAt": zod.coerce.date().nullable()
-})).describe('Last known local status of each periodic database-backed scheduler job.')
+})).describe('Last known local status of each periodic database-backed scheduler job.'),
+  "startupReadinessOverride": zod.object({
+  "state": zod.enum(['active', 'unused']),
+  "reason": zod.string().nullable(),
+  "expiresAt": zod.coerce.date().nullable(),
+  "backgroundWork": zod.enum(['disabled', 'enabled'])
+}).optional().describe('Present only in a deployment where LUMERA_STARTUP_READINESS_OVERRIDE is set. \"active\" means readiness failed and the owner override admitted this boot with background work disabled; \"unused\" means readiness passed and the variable should be removed.')
 })
 
 
