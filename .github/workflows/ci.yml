@@ -510,7 +510,13 @@ jobs:
       - name: Run owned PostgreSQL 16 Phase 5 proofs
         env:
           LUMERA_POSTGRES_16_BIN: /usr/lib/postgresql/16/bin
-        run: env -u DATABASE_URL -u LUMERA_MIGRATION_DATABASE_URL pnpm run test:migrations:phase5:integration -- --output-dir="${RUNNER_TEMP}/lumera-phase5-integration"
+        run: |
+          if command -v initdb; then
+            echo "Unexpected initdb on PATH"
+            exit 1
+          fi
+          echo "BINARY_PROOF command -v initdb: not found"
+          env -u DATABASE_URL -u LUMERA_MIGRATION_DATABASE_URL pnpm run test:migrations:phase5:integration -- --output-dir="${RUNNER_TEMP}/lumera-phase5-integration"
       - name: Upload Phase 5 migration integration output
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
