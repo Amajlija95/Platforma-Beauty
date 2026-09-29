@@ -48,7 +48,7 @@ function candidateSources(extra: Record<string, string> = {}): Record<string, st
 test("the real entrypoint passes after removing all eight startup owners", () => {
   const report = checkStartupDdlRemovalGate({ rootFile: rootPath });
   assert.equal(report.pass, true, report.violations.map((item) => item.detail).join("\n"));
-  assert.equal(report.readinessGuard, "assertDatabaseMigrationReady");
+  assert.equal(report.readinessGuard, "admitDatabaseMigrationStartup");
   assert.equal(report.inventory.owners.length, 0);
 });
 
@@ -71,7 +71,7 @@ test("an AST candidate with a read-only guard passes the removal gate", () => {
     moduleSources: candidateSources(),
   });
   assert.equal(report.pass, true, report.violations.map((item) => item.detail).join("\n"));
-  assert.equal(report.readinessGuard, "assertDatabaseMigrationReady");
+  assert.equal(report.readinessGuard, "admitDatabaseMigrationStartup");
   assert.equal(report.inventory.owners.length, 0);
 });
 
@@ -109,10 +109,10 @@ test("raw reachable DDL, unresolved dynamic SQL, and computed evaluation fail", 
 
 test("a readiness guard after listen is rejected", () => {
   const source = candidateSources();
-  source[rootPath] = source[rootPath].replace(
-    'await assertDatabaseMigrationReady(pool);\n',
-    '',
-  ).concat('\nawait assertDatabaseMigrationReady();\n');
+  const guardLine = "const startupAdmission = await admitDatabaseMigrationStartup(pool);\n";
+  assert.ok(source[rootPath]!.includes(guardLine));
+  source[rootPath] = source[rootPath]!.replace(guardLine, "")
+    .concat("\nconst startupAdmission = await admitDatabaseMigrationStartup(pool);\n");
   const report = checkStartupDdlRemovalGate({ rootFile: rootPath, moduleSources: source });
   assert.equal(report.pass, false);
   assert.ok(report.violations.some((item) => item.reason === "readiness-guard-too-late"));
@@ -121,20 +121,30 @@ test("a readiness guard after listen is rejected", () => {
 test("a same-named local readiness helper cannot satisfy the pinned guard import", () => {
   const source = candidateSources({
     "artifacts/api-server/src/local-readiness.ts": `
-      export async function assertDatabaseMigrationReady() {
+      export async function admitDatabaseMigrationStartup() {
         await client.query("SELECT 1");
+        return { mode: "normal", unusedOverride: null };
       }
+      export const STARTUP_READINESS_OVERRIDE_VARIABLE = "LUMERA_STARTUP_READINESS_OVERRIDE";
     `,
   });
-  source[rootPath] = source[rootPath]
+  source[rootPath] = source[rootPath]!
     .replace(
-      'import { assertDatabaseMigrationReady } from "@workspace/db/migration-runtime";',
-      'import { assertDatabaseMigrationReady } from "./local-readiness";',
+      /import \{\s*admitDatabaseMigrationStartup,\s*STARTUP_READINESS_OVERRIDE_VARIABLE,\s*\} from "@workspace\/db\/migration-runtime";/u,
+      'import { admitDatabaseMigrationStartup, STARTUP_READINESS_OVERRIDE_VARIABLE } from "./local-readiness";',
     );
   assert.match(source[rootPath]!, /from "\.\/local-readiness";/u);
   assert.doesNotMatch(source[rootPath]!, /@workspace\/db\/migration-runtime/u);
   const report = checkStartupDdlRemovalGate({ rootFile: rootPath, moduleSources: source });
-  assert.equal(report.readinessGuard, "assertDatabaseMigrationReady");
+  assert.equal(report.readinessGuard, "admitDatabaseMigrationStartup");
   assert.equal(report.pass, false, JSON.stringify(report.violations));
   assert.ok(report.violations.some((item) => item.reason === "missing-readiness-guard-import"));
+});
+test("binding the admission guard without calling it does not satisfy the gate", () => {
+  const source = candidateSources();
+  const guardLine = "const startupAdmission = await admitDatabaseMigrationStartup(pool);\n";
+  source[rootPath] = source[rootPath]!.replace(guardLine, "const startupAdmission = admitDatabaseMigrationStartup;\n");
+  const report = checkStartupDdlRemovalGate({ rootFile: rootPath, moduleSources: source });
+  assert.equal(report.pass, false);
+  assert.ok(report.violations.some((item) => item.reason === "missing-readiness-guard"), JSON.stringify(report.violations));
 });

@@ -211,23 +211,34 @@ test("readiness admits reviewed PostgreSQL 16 patch releases with identical cata
 });
 
 test("readiness rejects schema drift and unsupported PostgreSQL majors", async () => {
-  for (const identity of [
-    {
+  // Only a schema fingerprint difference reports CATALOG_DRIFT; server family
+  // and fingerprint algorithm mismatches have their own non-overridable codes.
+  for (const [identity, reason, catalog] of [
+    [{
       ...canonicalCatalogIdentity(160010),
       structuralFingerprint: migrationReadinessContract.structuralFingerprint,
       physicalFingerprint: migrationReadinessContract.physicalFingerprint,
       normalizedObjectCount: 5060,
-    },
-    {
+    }, "MIGRATION_READINESS_CATALOG_DRIFT", "DRIFTED"],
+    [{
       ...canonicalCatalogIdentity(160011),
       structuralFingerprint: "schema-drift",
-    },
-    {
+    }, "MIGRATION_READINESS_CATALOG_DRIFT", "DRIFTED"],
+    [{
       ...canonicalCatalogIdentity(150010),
       postgresServerMajorVersion: 15,
       postgresDeparserFormat: "postgresql-15-deparser-v1",
-    },
-  ]) {
+    }, "MIGRATION_READINESS_POSTGRES_FAMILY", "UNKNOWN"],
+    [{
+      ...canonicalCatalogIdentity(170002),
+      postgresServerMajorVersion: 17,
+      structuralFingerprint: "schema-drift",
+    }, "MIGRATION_READINESS_POSTGRES_FAMILY", "UNKNOWN"],
+    [{
+      ...canonicalCatalogIdentity(160010),
+      fingerprintVersion: 5,
+    }, "MIGRATION_READINESS_FINGERPRINT_FORMAT", "UNKNOWN"],
+  ] as const) {
     const client = {
       async query(sql: string) {
         if (sql.includes("migration_id, checksum")) {
@@ -261,8 +272,8 @@ test("readiness rejects schema drift and unsupported PostgreSQL majors", async (
     };
     const report = await inspectDatabaseMigrationReady(client, async () => identity, localTargetIdentity);
     assert.equal(report.ready, false);
-    assert.equal(report.reason, "MIGRATION_READINESS_CATALOG_DRIFT");
-    assert.equal(report.catalog, "DRIFTED");
+    assert.equal(report.reason, reason);
+    assert.equal(report.catalog, catalog);
   }
   for (const state of ["ADOPTED", "UNKNOWN"]) {
     let catalogReads = 0;

@@ -15,6 +15,8 @@ export interface Phase5TestInventoryEntry {
 export const phase5TestInventory: readonly Phase5TestInventoryEntry[] = [
   { path: "scripts/src/migrations/target-identity.test.ts", declaredTests: 11, execution: "database-free", provenance: "phase5-followup", skipPolicy: "forbidden" },
   { path: "scripts/src/migrations/ledger-identity.test.ts", declaredTests: 3, execution: "database-free", provenance: "phase5-followup", skipPolicy: "forbidden" },
+  { path: "lib/db/src/migration-runtime/startup-admission.test.ts", declaredTests: 6, execution: "database-free", provenance: "phase5-followup", skipPolicy: "forbidden" },
+  { path: "scripts/src/migrations/startup-readiness-override.integration.test.ts", declaredTests: 3, execution: "disposable-integration", provenance: "phase5-followup", skipPolicy: "forbidden" },
   { path: "scripts/src/migrations/target-identity.integration.test.ts", declaredTests: 6, execution: "disposable-integration", provenance: "phase5-followup", skipPolicy: "forbidden" },
   { path: "artifacts/api-server/src/lib/business-growth-schema-boot-regression.test.ts", declaredTests: 1, execution: "disposable-integration", provenance: "343ea5ae" },
   { path: "lib/db/src/migration-runtime/contract.test.ts", declaredTests: 5, execution: "database-free", provenance: "343ea5ae" },
@@ -107,5 +109,10 @@ export const phase5DisposableIntegrationSuites = [
     id: "interrupted-recovery",
     declaredTests: 1,
     files: ["scripts/src/startup-equivalence/recovery.test.ts"],
+  },
+  {
+    id: "startup-readiness-override",
+    declaredTests: 3,
+    files: ["scripts/src/migrations/startup-readiness-override.integration.test.ts"],
   },
 ] as const;

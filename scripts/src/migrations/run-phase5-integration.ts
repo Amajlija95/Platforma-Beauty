@@ -347,7 +347,7 @@ async function runTestFile(
   const logPath = path.join(outputDir, `${safeName}.log`);
   const tsx = path.join(workspaceRoot, "scripts/node_modules/.bin/tsx");
   const args = [file, `--admin-url=${adminUrl}`];
-  if (suite.id === "actual-entrypoint-boot") {
+  if (suite.id === "actual-entrypoint-boot" || suite.id === "startup-readiness-override") {
     args.push(`--sql-log=${sqlLogPath}`, `--evidence-dir=${outputDir}`);
   }
   const { exitCode, timedOut } = await new Promise<{ exitCode: number; timedOut: boolean }>((resolve, reject) => {

@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { HealthCheckResponse } from "@workspace/api-zod";
 import { getPoolStatus } from "@workspace/db";
 import { schedulerHealthSnapshot } from "../lib/scheduler-resilience";
+import { isStartupReadinessOverrideActive } from "../lib/startup-admission-state";
 
 const router: IRouter = Router();
 
@@ -11,7 +12,7 @@ router.get("/healthz", (_req, res) => {
     res.setHeader("x-lumera-database-statements", String(databasePool.statements));
   }
   const data = HealthCheckResponse.parse({
-    status: "ok",
+    status: isStartupReadinessOverrideActive() ? "readiness-override" : "ok",
     databasePool,
     schedulerJobs: schedulerHealthSnapshot(),
   });
