@@ -507,26 +507,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends postgresql-16
           test -x /usr/lib/postgresql/16/bin/initdb
           test -x /usr/lib/postgresql/16/bin/postgres
-      - name: Run owned PostgreSQL 16 Phase 5 proofs
-        env:
-          LUMERA_POSTGRES_16_BIN: /usr/lib/postgresql/16/bin
-        run: |
-          if command -v initdb; then
-            echo "Unexpected initdb on PATH"
-            exit 1
-          fi
-          echo "BINARY_PROOF command -v initdb: not found"
-          env -u DATABASE_URL -u LUMERA_MIGRATION_DATABASE_URL pnpm run test:migrations:phase5:integration -- --output-dir="${RUNNER_TEMP}/lumera-phase5-integration"
-      - name: Upload Phase 5 migration integration output
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: phase5-migration-integration-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/lumera-phase5-integration/
-          if-no-files-found: error
-          retention-days: 14
-      - name: Run data transfer mapping tests
-        run: env -u DATABASE_URL -u LUMERA_MIGRATION_DATABASE_URL pnpm run test:data-transfer:unit
+      # One proof, before every disposable PostgreSQL step in this job: the
+      # binaries are reachable only through LUMERA_POSTGRES_16_BIN.
       - name: Prove explicit PostgreSQL binary resolution without initdb on PATH
         env:
           LUMERA_POSTGRES_16_BIN: /usr/lib/postgresql/16/bin
@@ -537,6 +519,20 @@ jobs:
           fi
           echo "BINARY_PROOF command -v initdb: not found"
           env -u DATABASE_URL -u LUMERA_MIGRATION_DATABASE_URL pnpm --filter @workspace/scripts exec tsx --test src/data-transfer-proof/binaries.test.ts
+      - name: Run owned PostgreSQL 16 Phase 5 proofs
+        env:
+          LUMERA_POSTGRES_16_BIN: /usr/lib/postgresql/16/bin
+        run: env -u DATABASE_URL -u LUMERA_MIGRATION_DATABASE_URL pnpm run test:migrations:phase5:integration -- --output-dir="${RUNNER_TEMP}/lumera-phase5-integration"
+      - name: Upload Phase 5 migration integration output
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase5-migration-integration-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lumera-phase5-integration/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Run data transfer mapping tests
+        run: env -u DATABASE_URL -u LUMERA_MIGRATION_DATABASE_URL pnpm run test:data-transfer:unit
       - name: Run owned PostgreSQL 16 data transfer regression tests
         env:
           LUMERA_POSTGRES_16_BIN: /usr/lib/postgresql/16/bin
