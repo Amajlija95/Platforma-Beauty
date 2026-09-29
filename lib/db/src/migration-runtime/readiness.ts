@@ -164,6 +164,15 @@ export async function inspectDatabaseMigrationReady(
     }
     if ([...expected.keys()].some(id => !seen.has(id))) throw new Error("MIGRATION_READINESS_LEDGER_FRONTIER");
     const identity = await readCatalogIdentity(readOnly);
+    // Server family and fingerprint algorithm are checked before the schema
+    // fingerprint so that only a genuine schema difference reports
+    // CATALOG_DRIFT (the one reason the startup override may name).
+    if (!isReviewedPostgresPatch(identity)) {
+      throw new Error("MIGRATION_READINESS_POSTGRES_FAMILY");
+    }
+    if (!matchesFingerprintFormat(identity)) {
+      throw new Error("MIGRATION_READINESS_FINGERPRINT_FORMAT");
+    }
     if (!matchesCanonicalCatalog(identity)) {
       throw new Error("MIGRATION_READINESS_CATALOG_DRIFT");
     }
@@ -260,12 +269,16 @@ function timestampMilliseconds(value: unknown): number | null {
   return Number.isFinite(milliseconds) ? milliseconds : null;
 }
 
+function matchesFingerprintFormat(identity: CatalogIdentity): boolean {
+  return identity.formatVersion === 2
+    && identity.fingerprintVersion === 4
+    && identity.schemaFormatVersion === 1;
+}
+
 function matchesCanonicalCatalog(identity: CatalogIdentity): boolean {
   return identity.structuralFingerprint === HEAD_STRUCTURAL
     && identity.physicalFingerprint === HEAD_PHYSICAL
-    && identity.formatVersion === 2
-    && identity.fingerprintVersion === 4
-    && identity.schemaFormatVersion === 1
+    && matchesFingerprintFormat(identity)
     && isReviewedPostgresPatch(identity)
     && identity.normalizedObjectCount === 5065
     && identity.enumCount === 103

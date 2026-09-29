@@ -12,6 +12,15 @@ import {
  */
 export const STARTUP_READINESS_OVERRIDE_VARIABLE = "LUMERA_STARTUP_READINESS_OVERRIDE";
 export const STARTUP_READINESS_OVERRIDE_MAX_MS = 24 * 60 * 60 * 1000;
+/**
+ * The only readiness reasons an override may admit. A schema fingerprint
+ * mismatch can be a false alarm (for example a provider patch that changes
+ * catalog rendering); every other reason means an unreadable, unknown, empty,
+ * wrongly bound or incompletely migrated database and is never overridable.
+ */
+export const STARTUP_READINESS_OVERRIDABLE_REASONS: readonly string[] = Object.freeze([
+  "MIGRATION_READINESS_CATALOG_DRIFT",
+]);
 
 const REASON_PATTERN = /^MIGRATION_READINESS_[A-Z0-9_]+(?::[A-Za-z0-9_.-]+)*$/u;
 const EXPIRY_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z$/u;
@@ -22,6 +31,7 @@ export type StartupReadinessOverrideOutcome =
   | "expired"
   | "too-long"
   | "reason-mismatch"
+  | "not-overridable"
   | "granted"
   | "unused";
 
@@ -57,6 +67,12 @@ export function evaluateStartupReadinessOverride(
   if (!parsed) return { outcome: "malformed", reason: null, expiresAt: null };
   const { reason, expiresAt } = parsed;
   if (readinessReason === null) return { outcome: "unused", reason, expiresAt };
+  // Checked before expiry and reason so the refusal says plainly that nothing
+  // can admit this failure. An override naming any other code can then only be
+  // a reason mismatch against the one overridable reason.
+  if (!STARTUP_READINESS_OVERRIDABLE_REASONS.includes(readinessReason)) {
+    return { outcome: "not-overridable", reason, expiresAt };
+  }
   const remaining = expiresAt.getTime() - now.getTime();
   if (remaining <= 0) return { outcome: "expired", reason, expiresAt };
   if (remaining > STARTUP_READINESS_OVERRIDE_MAX_MS) return { outcome: "too-long", reason, expiresAt };
@@ -92,7 +108,10 @@ export async function admitDatabaseMigrationStartup(
     if (evaluation.outcome === "granted") {
       return { mode: "readiness-override", reason: evaluation.reason!, expiresAt: evaluation.expiresAt! };
     }
-    if (evaluation.outcome !== "absent") {
+    if (evaluation.outcome === "not-overridable") {
+      error.message = `${error.message} (STARTUP_READINESS_OVERRIDE_REJECTED:not-overridable; only ${
+        STARTUP_READINESS_OVERRIDABLE_REASONS.join(", ")} can be overridden)`;
+    } else if (evaluation.outcome !== "absent") {
       error.message = `${error.message} (STARTUP_READINESS_OVERRIDE_REJECTED:${evaluation.outcome})`;
     }
     throw error;
